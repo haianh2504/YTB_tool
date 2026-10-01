@@ -42,15 +42,27 @@ function setPromptValue(box, value) {
 }
 
 function visibleButtons() {
-  return queryAllDeep('button, [role="button"]').filter((el) => el.getClientRects().length && !el.hasAttribute("disabled") && el.getAttribute("aria-disabled") !== "true");
+  return queryAllDeep('button, [role="button"], [role="menuitem"]').filter((el) => el.getClientRects().length && !el.hasAttribute("disabled") && el.getAttribute("aria-disabled") !== "true");
+}
+
+let preferredExtendTarget = null;
+
+function controlText(element) {
+  return [
+    textOf(element),
+    element?.getAttribute?.("aria-label"),
+    element?.getAttribute?.("title"),
+    element?.getAttribute?.("data-tooltip"),
+    element?.getAttribute?.("data-testid")
+  ].filter(Boolean).join(" ");
 }
 
 function findAction(pattern) {
-  return visibleButtons().reverse().find((el) => pattern.test(textOf(el)) || pattern.test(el.getAttribute("aria-label") || "") || pattern.test(el.getAttribute("data-tooltip") || ""));
+  return visibleButtons().reverse().find((el) => pattern.test(controlText(el)));
 }
 
 function actionText(element) {
-  return `${textOf(element)} ${element?.getAttribute?.("aria-label") || ""} ${element?.getAttribute?.("data-tooltip") || ""}`.trim();
+  return controlText(element).trim();
 }
 
 function pageSignals() {
@@ -140,19 +152,42 @@ async function attachReferenceImages(images = []) {
   closeDialog?.click();
 }
 
+function videoSignature(video) {
+  return [
+    video.currentSrc,
+    video.getAttribute("src"),
+    video.getAttribute("poster"),
+    video.getAttribute("data-testid"),
+    video.getAttribute("aria-label")
+  ].filter(Boolean).join("|");
+}
+
+function snapshotVideos() {
+  return new Map(queryAllDeep("video").map((video) => [video, videoSignature(video)]));
+}
+
+function videosChangedSince(snapshot) {
+  return queryAllDeep("video")
+    .filter((video) => video.getClientRects().length)
+    .filter((video) => !snapshot.has(video) || snapshot.get(video) !== videoSignature(video));
+}
+
+function rememberCompletedVideo(video) {
+  if (video) preferredExtendTarget = { element: video, signature: videoSignature(video) };
+}
+
 async function waitForGeneration(scene, beforeVideos) {
-  let sawRunning = false;
   let settledTicks = 0;
+  let completedVideo = null;
   const outcome = await waitFor(() => {
     const current = pageSignals();
-    if (current.running) sawRunning = true;
     if (current.lowCredits) return { kind: "credits" };
     if (current.policy) return { kind: "policy" };
     if (current.failure) return { kind: "failure" };
-    const videos = queryAllDeep("video").filter((video) => video.getClientRects().length);
-    const resultAction = findAction(/extend(?: video)?|add to scene|download|thêm vào cảnh|tải xuống/i);
-    const resultReady = videos.length > beforeVideos || !!resultAction;
-    settledTicks = !current.running && (resultReady || sawRunning) ? settledTicks + 1 : 0;
+    const changedVideos = videosChangedSince(beforeVideos);
+    const resultReady = changedVideos.length > 0;
+    if (resultReady) completedVideo = changedVideos.at(-1);
+    settledTicks = !current.running && resultReady ? settledTicks + 1 : 0;
     if (settledTicks >= 3) return { kind: "complete" };
     return null;
   }, 12 * 60 * 1000, 2000);
@@ -162,6 +197,7 @@ async function waitForGeneration(scene, beforeVideos) {
   if (outcome.kind === "policy") throw Object.assign(new Error("Flow từ chối nội dung theo chính sách."), { code: "POLICY" });
   if (outcome.kind === "failure") throw Object.assign(new Error("Flow báo tạo video thất bại. Cần kiểm tra trước khi thử lại."), { code: "GENERATION_FAILED" });
 
+  rememberCompletedVideo(completedVideo);
   report("FLOW_STATUS", { status: "scene-done", sceneId: scene.id, message: "Flow có dấu hiệu đã hoàn tất cảnh." });
 }
 
@@ -201,7 +237,7 @@ async function ensureExtendCompatibleModel() {
 }
 
 function findExtendAction() {
-  return findAction(/\bextend(?: video| clip)?\b|continue video|nối dài|mở rộng/i);
+  return findAction(/\bextend\b|continue (?:this )?(?:video|clip)|nối dài|mở rộng/i);
 }
 
 function latestVisibleVideo() {
@@ -213,6 +249,38 @@ function latestVisibleVideo() {
       return (ar.top + ar.left) - (br.top + br.left);
     })
     .at(-1) || null;
+}
+
+function resolvePreferredVideo() {
+  if (!preferredExtendTarget) return null;
+  const { element, signature } = preferredExtendTarget;
+  if (element?.isConnected && element.getClientRects().length) {
+    preferredExtendTarget.signature = videoSignature(element);
+    return element;
+  }
+  const match = queryAllDeep("video").find((video) => video.getClientRects().length && videoSignature(video) === signature);
+  if (match) {
+    preferredExtendTarget.element = match;
+    return match;
+  }
+  return null;
+}
+
+function buttonsInVideoAncestors(video) {
+  if (!video) return { buttons: [], extend: null };
+  const buttons = [];
+  let node = video;
+  for (let depth = 0; node && depth < 9; depth++, node = node.parentElement || node.getRootNode()?.host) {
+    buttons.push(...queryAllDeep('button, [role="button"], [role="menuitem"]', node)
+      .filter((button) => button !== video && button.getClientRects().length));
+    const extend = buttons.find((button) => /\bextend\b|continue (?:this )?(?:video|clip)|nối dài|mở rộng/i.test(controlText(button)));
+    if (extend) return { buttons, extend };
+  }
+  return { buttons, extend: null };
+}
+
+function findExtendForVideo(video) {
+  return buttonsInVideoAncestors(video).extend;
 }
 
 function activateMedia(video) {
@@ -244,25 +312,24 @@ function nearestMoreMenu(video) {
 }
 
 async function openExtendForLatestVideo() {
-  let extend = await waitFor(findExtendAction, 15000, 500);
+  const video = resolvePreferredVideo() || latestVisibleVideo();
+  if (!video) return null;
+
+  let extend = findExtendForVideo(video);
   if (extend) return extend;
 
-  const video = latestVisibleVideo();
   activateMedia(video);
-  extend = await waitFor(findExtendAction, 6000, 300);
+  extend = await waitFor(() => findExtendForVideo(video), 6000, 300);
   if (extend) return extend;
 
-  const more = nearestMoreMenu(video);
+  const controls = buttonsInVideoAncestors(video).buttons;
+  const more = nearestMoreMenu(video) || controls.filter((button) =>
+    /more (?:options|actions)|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
+  ).at(0);
   if (more) {
     more.click();
-    extend = await waitFor(findExtendAction, 5000, 300);
-    if (extend) return extend;
-  }
-
-  const settings = findAction(/^(settings|generation settings|cài đặt)$/i);
-  if (settings) {
-    settings.click();
-    extend = await waitFor(findExtendAction, 4000, 300);
+    // Flow may render its menu in a portal outside the video card.
+    extend = await waitFor(findExtendAction, 7000, 300);
     if (extend) return extend;
   }
 
@@ -273,7 +340,7 @@ async function submitScene(scene) {
   const box = await waitFor(findPromptBox, 15000);
   if (!box) throw new Error("Không tìm thấy ô prompt trên Flow.");
   await ensureExtendCompatibleModel();
-  const beforeVideos = queryAllDeep("video").length;
+  const beforeVideos = snapshotVideos();
   setPromptValue(box, scene.prompt);
   await new Promise((resolve) => setTimeout(resolve, 600));
   await attachReferenceImages(scene.characterImages || []);
@@ -293,15 +360,11 @@ async function submitScene(scene) {
 
 async function extendScene(scene) {
   let extend = await openExtendForLatestVideo();
-  if (!extend) {
-    await ensureExtendCompatibleModel();
-    extend = await openExtendForLatestVideo();
-  }
-  if (!extend) throw Object.assign(new Error("Video hiện tại không cung cấp Extend dù đã chọn Veo 3.1 Lite. Cảnh 1 nhiều khả năng được tạo bằng Agent/Gemini Omni nên không thể Extend; hãy đặt lại cảnh, chọn Video → Veo 3.1 Lite và tạo lại cảnh 1."), { code: "EXTEND_UNSUPPORTED_SOURCE" });
+  if (!extend) throw Object.assign(new Error("Không tìm thấy thao tác Extend trên video vừa hoàn tất. Hãy mở menu của đúng video trong Flow và kiểm tra thao tác Extend; extension đã dừng để tránh nối nhầm video."), { code: "EXTEND_ACTION_NOT_FOUND" });
   extend.click();
   const box = await waitFor(findPromptBox, 10000);
   if (!box) throw new Error("Đã mở Extend nhưng không tìm thấy ô prompt.");
-  const beforeVideos = queryAllDeep("video").length;
+  const beforeVideos = snapshotVideos();
   setPromptValue(box, scene.prompt);
   await attachReferenceImages(scene.characterImages || []);
   await new Promise((resolve) => setTimeout(resolve, 500));
