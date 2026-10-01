@@ -48,13 +48,17 @@ function visibleButtons() {
 let preferredExtendTarget = null;
 
 function controlText(element) {
-  return [
+  const ownLabels = [
     textOf(element),
     element?.getAttribute?.("aria-label"),
+    element?.getAttribute?.("aria-description"),
     element?.getAttribute?.("title"),
     element?.getAttribute?.("data-tooltip"),
     element?.getAttribute?.("data-testid")
-  ].filter(Boolean).join(" ");
+  ];
+  const childLabels = [...(element?.querySelectorAll?.("[aria-label], [title], [data-tooltip]") || [])]
+    .flatMap((child) => [child.getAttribute("aria-label"), child.getAttribute("title"), child.getAttribute("data-tooltip")]);
+  return [...ownLabels, ...childLabels].filter(Boolean).join(" ");
 }
 
 function findAction(pattern) {
@@ -62,24 +66,56 @@ function findAction(pattern) {
 }
 
 function findComposerAction(box, pattern) {
-  const excluded = /extend|download|upload|ingredients?|settings|more options|tùy chọn|tải xuống|tải ảnh/i;
+  const excluded = /extend|download|upload|ingredients?|settings|more options|feedback|tùy chọn|tải xuống|tải ảnh/i;
   let node = box;
   for (let depth = 0; node && depth < 9; depth++, node = node.parentElement || node.getRootNode()?.host) {
     const candidates = queryAllDeep('button, [role="button"], [role="menuitem"]', node)
       .filter((element) => element.getClientRects().length && !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true")
       .filter((element) => pattern.test(controlText(element)) && !excluded.test(controlText(element)));
     if (candidates.length) {
-      const boxRect = box.getBoundingClientRect();
-      return candidates.sort((a, b) => {
-        const distance = (element) => {
-          const rect = element.getBoundingClientRect();
-          return Math.hypot(rect.left + rect.width / 2 - (boxRect.left + boxRect.width / 2), rect.top + rect.height / 2 - (boxRect.top + boxRect.height / 2));
-        };
-        return distance(a) - distance(b);
-      })[0];
+      return candidates.sort((a, b) => distanceToComposer(a, box) - distanceToComposer(b, box))[0];
     }
   }
-  return null;
+
+  // Flow sometimes portals the composer action outside the editor subtree.
+  const globalCandidates = visibleButtons()
+    .filter((element) => pattern.test(controlText(element)) && !excluded.test(controlText(element)))
+    .map((element) => ({ element, distance: distanceToComposer(element, box) }))
+    .filter(({ element, distance }) => distance <= (/^(create|run|send|submit|start)$/i.test(controlText(element).trim()) ? 250 : 700))
+    .sort((a, b) => a.distance - b.distance);
+  if (globalCandidates.length) return globalCandidates[0].element;
+
+  // Some Flow builds expose the submit control as an unlabeled arrow icon.
+  // Only accept a unique icon button in the composer's lower-right action area.
+  const boxRect = box.getBoundingClientRect();
+  const iconCandidates = visibleButtons().filter((element) => {
+    if (controlText(element).trim()) return false;
+    if (!element.querySelector("svg, [data-icon], [class*=icon]")) return false;
+    const rect = element.getBoundingClientRect();
+    const nearComposerRight = rect.left >= boxRect.left + boxRect.width * 0.55 && rect.left <= boxRect.right + 140;
+    const nearComposerBottom = rect.top >= boxRect.top + boxRect.height * 0.35 && rect.top <= boxRect.bottom + 150;
+    return nearComposerRight && nearComposerBottom && rect.width >= 20 && rect.width <= 96 && rect.height >= 20 && rect.height <= 96;
+  });
+  return iconCandidates.length === 1 ? iconCandidates[0] : null;
+}
+
+function distanceToComposer(element, box) {
+  const a = element.getBoundingClientRect();
+  const b = box.getBoundingClientRect();
+  const dx = Math.max(b.left - a.right, a.left - b.right, 0);
+  const dy = Math.max(b.top - a.bottom, a.top - b.bottom, 0);
+  return Math.hypot(dx, dy);
+}
+
+function nearbyControlsDescription(box) {
+  if (!box) return "";
+  return visibleButtons()
+    .map((element) => ({ label: controlText(element).trim() || "(nút biểu tượng)", distance: distanceToComposer(element, box) }))
+    .filter(({ distance }) => distance <= 700)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 8)
+    .map(({ label, distance }) => `${label} ~${Math.round(distance)}px`)
+    .join("; ");
 }
 
 function actionText(element) {
@@ -376,7 +412,10 @@ async function submitScene(scene) {
     10000,
     300
   );
-  if (!generate) throw new Error("Đã điền prompt nhưng Flow chưa hiển thị nút tạo video khả dụng cạnh ô prompt. Kiểm tra prompt, model và trạng thái Flow rồi thử lại; extension chưa gửi tác vụ.");
+  if (!generate) {
+    const nearby = nearbyControlsDescription(currentBox);
+    throw new Error(`Đã điền prompt nhưng chưa xác định được nút gửi an toàn; extension chưa gửi tác vụ.${nearby ? ` Các nút gần ô prompt: ${nearby}` : " Không thấy nút khả dụng gần ô prompt."}`);
+  }
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi cảnh đến Flow." });
 
@@ -400,7 +439,10 @@ async function extendScene(scene) {
     10000,
     300
   );
-  if (!generate) throw new Error("Đã chuẩn bị prompt Extend nhưng Flow chưa hiển thị nút tạo video khả dụng cạnh ô prompt; extension chưa gửi tác vụ.");
+  if (!generate) {
+    const nearby = nearbyControlsDescription(currentBox);
+    throw new Error(`Đã chuẩn bị prompt Extend nhưng chưa xác định được nút gửi an toàn; extension chưa gửi tác vụ.${nearby ? ` Các nút gần ô prompt: ${nearby}` : " Không thấy nút khả dụng gần ô prompt."}`);
+  }
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi phần Extend đến Flow." });
   await waitForGeneration(scene, beforeVideos);
