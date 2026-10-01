@@ -368,16 +368,33 @@ function videoNearbyActionsDescription(video) {
     .join("; ");
 }
 
-function activateMedia(video) {
-  if (!video) return null;
-  video.scrollIntoView({ block: "center", inline: "center" });
-  for (const type of ["pointerover", "mouseover", "mouseenter"]) {
-    video.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
+function mediaSurfaceCandidates(video) {
+  if (!video) return [];
+  const videoRect = video.getBoundingClientRect();
+  const targets = [];
+  let node = video.parentElement || video.getRootNode()?.host;
+  for (let depth = 0; node && depth < 7; depth++, node = node.parentElement || node.getRootNode()?.host) {
+    const rect = node.getBoundingClientRect?.();
+    if (!rect || !node.getClientRects?.().length) continue;
+    // Stay on the actual preview surface. Larger ancestors are usually the
+    // asset-grid/card wrapper; clicking those can activate batch selection.
+    if (rect.width > videoRect.width * 1.45 || rect.height > videoRect.height * 1.45) break;
+    const visibleActions = queryAllDeep('button, [role="button"], [role="menuitem"]', node)
+      .filter((action) => action.getClientRects().length)
+      .filter((action) => !/^(play|pause|mute|unmute|volume|fullscreen)\b/i.test(controlText(action).trim()));
+    if (visibleActions.length || node.matches?.('button, [role="button"], [role="menuitem"]')) break;
+    if (rect.width >= videoRect.width * 0.8 && rect.height >= videoRect.height * 0.8) targets.push(node);
   }
-  // Dispatch the click from the clip itself. Clicking its outer asset wrapper
-  // can put Flow into batch-selection mode instead of opening clip actions.
-  video.click();
-  return video;
+  return [...targets, video];
+}
+
+function activateMedia(target) {
+  if (!target) return;
+  target.scrollIntoView({ block: "center", inline: "center" });
+  for (const type of ["pointerover", "mouseover", "mouseenter"]) {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
+  }
+  target.click();
 }
 
 async function openExtendForLatestVideo(signal) {
@@ -385,10 +402,18 @@ async function openExtendForLatestVideo(signal) {
   const video = resolvePreferredVideo() || latestVisibleVideo();
   if (!video) return null;
 
-  activateMedia(video);
-  // Flow's documented workflow puts Extend in the bottom prompt controls after
-  // selecting a clip; it is not in the card's More options menu.
-  return waitFor(findExtendAction, 12000, 300, signal);
+  // Flow handles clip selection on the preview surface, not always on the
+  // nested <video> element. Try only the preview-sized wrappers, never the
+  // full card with its More/Reuse/batch controls.
+  for (const target of mediaSurfaceCandidates(video)) {
+    throwIfCancelled(signal);
+    activateMedia(target);
+    const extend = await waitFor(findExtendAction, 2600, 250, signal);
+    if (extend) return extend;
+  }
+  // In the documented Flow workflow, Extend appears in the bottom prompt
+  // controls after selecting a clip; it is not in the card's More options menu.
+  return null;
 }
 
 async function submitScene(scene, signal) {
@@ -430,7 +455,7 @@ async function extendScene(scene, signal) {
     const target = resolvePreferredVideo() || latestVisibleVideo();
     const nearby = videoNearbyActionsDescription(target);
     const promptControls = nearbyControlsDescription(findPromptBox());
-    throw Object.assign(new Error(`Đã chọn clip nhưng Flow chưa mở chế độ chỉnh sửa để hiện Extend ở thanh dưới.${nearby ? ` Các nút gần video: ${nearby}.` : " Không đọc được các nút của video."}${promptControls ? ` Các nút gần thanh prompt: ${promptControls}.` : " Không nhận diện được các nút gần thanh prompt."} Hãy kiểm tra clip tương thích Veo 3.1 8 giây; workflow đã dừng để tránh tạo sai cảnh.`), { code: "EXTEND_ACTION_NOT_FOUND" });
+    throw Object.assign(new Error(`Flow chưa vào trình chỉnh sửa clip nên chưa thể xác nhận thao tác Extend. Đây chưa phải bằng chứng clip không tương thích; toolbar kiểu Download batch/Trash batch thường cho biết đang ở lưới tài nguyên.${nearby ? ` Các nút gần video: ${nearby}.` : " Không đọc được các nút của video."}${promptControls ? ` Các nút gần thanh prompt: ${promptControls}.` : " Không nhận diện được các nút gần thanh prompt."} Workflow đã dừng để tránh gửi nhầm cảnh.`), { code: "EXTEND_ACTION_NOT_FOUND" });
   }
   throwIfCancelled(signal);
   extend.click();
