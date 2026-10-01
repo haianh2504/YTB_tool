@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow Scene Director</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">F</div>
+    <div class="brand-copy"><strong>Flow Scene Director</strong><span id="projectSummary">Nhập CSV để tạo danh sách cảnh</span></div>
+    <button id="exportButton" class="icon-button" title="Xuất bản sao lưu" aria-label="Xuất bản sao lưu">⇧</button>
+  </header>
+
+  <main>
+    <section class="project-section">
+      <label class="field-label" for="projectTitle">Dự án</label>
+      <input id="projectTitle" class="text-input" maxlength="80" placeholder="Tên video của bạn">
+      <div class="settings-row">
+        <label class="setting"><span>Tỉ lệ</span><select id="aspectRatio"><option value="9:16">9:16 dọc</option><option value="16:9">16:9 ngang</option></select></label>
+        <label class="setting"><span>Nối cảnh</span><select id="transitionMode"><option value="extend">Extend</option></select></label>
+      </div>
+      <p id="workflowSummary" class="microcopy">Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh và @nhân vật</p>
+    </section>
+
+    <section class="toolbar" aria-label="Điều khiển dự án">
+      <button id="runButton" class="primary-button"><span class="play-icon">▶</span><span>Bắt đầu tự chạy</span></button>
+      <button id="pauseButton" class="secondary-button" title="Tạm dừng" aria-label="Tạm dừng">Ⅱ</button>
+      <label class="icon-button import-button" title="Nhập CSV" aria-label="Nhập CSV">⇩<input id="importFile" type="file" accept=".csv,.json,application/json,text/csv" hidden></label>
+    </section>
+
+    <section id="statusBar" class="status-bar" data-state="idle" aria-live="polite">
+      <span class="status-dot"></span><span id="statusText">Sẵn sàng · tiến trình được lưu tự động</span>
+    </section>
+
+    <section class="scenes-section">
+      <div class="section-heading"><div><h1>Các phân cảnh</h1><span id="sceneCount" class="section-meta">0 / 0 hoàn tất</span></div><button id="resetScenes" class="text-button">Đặt lại cảnh</button></div>
+      <div id="sceneList" class="scene-list"></div>
+    </section>
+
+    <section class="characters-section">
+      <div class="section-heading"><div><h2>Thư viện nhân vật</h2><span id="characterCount" class="section-meta">Ảnh được lưu trên máy này</span></div><button id="addCharacter" class="add-button" title="Thêm nhân vật" aria-label="Thêm nhân vật">+</button></div>
+      <div id="characterList" class="character-list"></div>
+    </section>
+
+    <footer><span id="flowConnection" class="connection"><i></i> Flow chưa được kiểm tra</span><button id="checkFlow" class="text-button">Kiểm tra Flow</button></footer>
+  </main>
+  <input id="backupFile" type="file" accept="application/json" hidden>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Scene Director",
+  "version": "0.1.8",
+  "description": "Plan a multi-scene Google Flow video and keep its production progress in Chrome.",
+  "permissions": ["storage", "sidePanel", "activeTab", "tabs", "scripting", "alarms"],
+  "host_permissions": [
+    "https://labs.google/fx/tools/flow/*",
+    "https://flow.google.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "action": { "default_title": "Open Flow Scene Director" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://labs.google/fx/tools/flow/*",
+        "https://flow.google.com/*"
+      ],
+      "js": ["flow-main.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://labs.google/fx/tools/flow/*",
+        "https://flow.google.com/*"
+      ],
+      "js": ["flow-content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
