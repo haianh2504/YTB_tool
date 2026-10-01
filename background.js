@@ -12,12 +12,30 @@ function isFlowUrl(url = "") {
 }
 
 async function findFlowTab() {
+  const [{ flowSceneDirectorFlowTabId } = {}, storedProject = {}] = await Promise.all([
+    chrome.storage.session.get("flowSceneDirectorFlowTabId"),
+    chrome.storage.local.get("flowSceneDirectorProject")
+  ]);
+  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeFlowTab = activeTabs.find((tab) => tab.id && isFlowUrl(tab.url));
+  if (activeFlowTab && (!storedProject.flowSceneDirectorProject?.running || !flowSceneDirectorFlowTabId)) {
+    await chrome.storage.session.set({ flowSceneDirectorFlowTabId: activeFlowTab.id });
+    return activeFlowTab;
+  }
+
+  if (flowSceneDirectorFlowTabId) {
+    const pinned = await chrome.tabs.get(flowSceneDirectorFlowTabId).catch(() => null);
+    if (pinned?.id && isFlowUrl(pinned.url)) return pinned;
+    if (storedProject.flowSceneDirectorProject?.running) return null;
+    await chrome.storage.session.remove("flowSceneDirectorFlowTabId");
+  }
+
   const tabs = await chrome.tabs.query({
     url: ["https://flow.google.com/*", "https://labs.google/fx/tools/flow/*"]
   });
   if (!tabs.length) return null;
   const lastFocused = await chrome.windows.getLastFocused().catch(() => null);
-  return tabs
+  const target = tabs
     .filter((tab) => tab.id && isFlowUrl(tab.url))
     .sort((a, b) => {
       const score = (tab) =>
@@ -26,6 +44,21 @@ async function findFlowTab() {
         ((tab.lastAccessed || 0) / 1e13);
       return score(b) - score(a);
     })[0] || null;
+  if (target?.id) await chrome.storage.session.set({ flowSceneDirectorFlowTabId: target.id });
+  return target;
+}
+
+async function saveCompletedKeyframe(message) {
+  if (!message?.keyframe?.data || !message.sceneId) return;
+  const { flowSceneDirectorProject } = await chrome.storage.local.get("flowSceneDirectorProject");
+  if (!flowSceneDirectorProject?.scenes) return;
+  const scene = flowSceneDirectorProject.scenes.find((entry) => entry.id === message.sceneId);
+  if (!scene) return;
+  scene.keyframe = message.keyframe;
+  scene.status = "done";
+  scene.note = "Đã tạo video và lưu keyframe cuối @last_keyframe.";
+  flowSceneDirectorProject.statusMessage = message.message || `Hoàn tất ${scene.title || `cảnh ${scene.sceneNumber || ""}`} và lưu keyframe.`;
+  await chrome.storage.local.set({ flowSceneDirectorProject });
 }
 
 async function findPromptFrame(tabId) {
@@ -54,8 +87,16 @@ async function findPromptFrame(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if ((message?.type === "FLOW_STATUS" || message?.type === "FLOW_ERROR") && sender.tab) {
-    chrome.runtime.sendMessage(message).catch(() => {});
-    return;
+    (async () => {
+      if (message.type === "FLOW_STATUS" && message.status === "scene-done") await saveCompletedKeyframe(message);
+      chrome.runtime.sendMessage(message).catch(() => {});
+      sendResponse({ ok: true });
+    })().catch((error) => {
+      const failure = { type: "FLOW_ERROR", sceneId: message.sceneId, code: "KEYFRAME_SAVE_FAILED", message: `Video đã hoàn tất nhưng không lưu được @last_keyframe. ${error?.message || "Hãy kiểm tra dung lượng bộ nhớ extension."}` };
+      chrome.runtime.sendMessage(failure).catch(() => {});
+      sendResponse({ ok: false, error: failure.message });
+    });
+    return true;
   }
 
   if (message?.type === "FLOW_COMMAND") {
@@ -75,4 +116,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })().catch((error) => sendResponse({ ok: false, error: error?.message || "Không tìm thấy tab Flow." }));
     return true;
   }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const [{ flowSceneDirectorFlowTabId }, { flowSceneDirectorProject }] = await Promise.all([
+    chrome.storage.session.get("flowSceneDirectorFlowTabId"),
+    chrome.storage.local.get("flowSceneDirectorProject")
+  ]);
+  if (flowSceneDirectorFlowTabId === tabId && !flowSceneDirectorProject?.running) await chrome.storage.session.remove("flowSceneDirectorFlowTabId");
 });

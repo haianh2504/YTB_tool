@@ -69,7 +69,7 @@ function render() {
   const totalScenes = project.scenes.length;
   $("#sceneCount").textContent = `${project.scenes.filter((scene) => scene.status === "done").length} / ${totalScenes} hoàn tất`;
   $("#projectSummary").textContent = totalScenes ? `${totalScenes} cảnh · ${projectDurationLabel()}` : "Nhập CSV để tạo danh sách cảnh";
-  $("#workflowSummary").textContent = totalScenes ? "Số cảnh và thời lượng lấy từ CSV · Nhân vật @mention được tự động gán" : "Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh và @nhân vật";
+  $("#workflowSummary").textContent = totalScenes ? "Mỗi cảnh cần ảnh Canva · cảnh sau tự kèm @last_keyframe · ảnh tham chiếu Veo 3.1 Lite cần 8s · có thể chuyển tab khi chạy" : "Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh và @nhân vật";
   renderScenes();
   renderCharacters();
 }
@@ -96,6 +96,45 @@ function renderScenes() {
     prompt.placeholder = `Mô tả hành động, bối cảnh, góc máy và âm thanh cho cảnh ${index + 1}…`;
     prompt.value = scene.prompt;
     prompt.dataset.scenePrompt = scene.id;
+    const referenceRow = document.createElement("div");
+    referenceRow.className = "scene-reference-row";
+    const compositeLabel = document.createElement("label");
+    compositeLabel.className = "scene-reference-label";
+    compositeLabel.textContent = scene.compositeImage ? `Đổi ảnh Canva · ${scene.compositeImage.name}` : "Nhập ảnh Canva / ảnh tổng hợp";
+    const compositeInput = document.createElement("input");
+    compositeInput.type = "file";
+    compositeInput.accept = "image/*";
+    compositeInput.hidden = true;
+    compositeInput.dataset.sceneCanva = scene.id;
+    compositeLabel.append(compositeInput);
+    referenceRow.append(compositeLabel);
+    if (scene.compositeImage?.data) {
+      const preview = document.createElement("img");
+      preview.className = "scene-reference-thumb";
+      preview.src = scene.compositeImage.data;
+      preview.alt = `Ảnh Canva cảnh ${index + 1}`;
+      referenceRow.append(preview);
+    }
+    if (index > 0) {
+      const previousKeyframe = project.scenes[index - 1]?.keyframe;
+      const keyframeInfo = document.createElement("span");
+      keyframeInfo.className = `scene-keyframe-info${previousKeyframe?.data ? " is-ready" : ""}`;
+      keyframeInfo.textContent = previousKeyframe?.data ? "@last_keyframe đã sẵn sàng" : "Cần @last_keyframe từ cảnh trước";
+      referenceRow.append(keyframeInfo);
+      if (previousKeyframe?.data) {
+        const keyframeThumb = document.createElement("img");
+        keyframeThumb.className = "scene-reference-thumb keyframe-thumb";
+        keyframeThumb.src = previousKeyframe.data;
+        keyframeThumb.alt = "@last_keyframe từ cảnh trước";
+        referenceRow.append(keyframeThumb);
+      }
+    }
+    if (scene.keyframe?.data) {
+      const savedLabel = document.createElement("span");
+      savedLabel.className = "scene-keyframe-info is-ready";
+      savedLabel.textContent = "Keyframe cuối đã lưu · @last_keyframe";
+      referenceRow.append(savedLabel);
+    }
     const actions = document.createElement("div");
     actions.className = "scene-actions";
     const charSelect = document.createElement("select");
@@ -123,7 +162,7 @@ function renderScenes() {
     fill.title = "Chỉ điền prompt, không tạo video";
     fill.dataset.fillScene = scene.id;
     actions.append(charSelect, fill);
-    card.append(head, prompt, actions);
+    card.append(head, prompt, referenceRow, actions);
     list.append(card);
   });
 }
@@ -183,7 +222,7 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
 
-function fullPrompt(scene) {
+function fullPrompt(scene, sceneIndex = project.scenes.findIndex((entry) => entry.id === scene.id)) {
   const assigned = project.characters.filter((character) => scene.characterIds.includes(character.id));
   const refs = assigned.map((character) => {
     const mention = character.name ? `@${character.name.replace(/^@+/, "").replace(/\s+/g, "")}` : "nhân vật";
@@ -191,8 +230,12 @@ function fullPrompt(scene) {
     return details;
   });
   const continuity = assigned.length ? `\n\nCharacter consistency: ${refs.join("; ")}. Keep each character's face, hairstyle, clothing, colors, proportions, and signature props consistent. Do not swap features or outfits between characters.` : "";
+  const canvaReference = scene.compositeImage?.data ? `\n\nUse @scene_${sceneIndex + 1}_canva as this scene's unique Canva composition/reference image. Follow its layout and intended visual relationships while animating the scene.` : "";
+  const lastKeyframe = sceneIndex > 0 ? "\n\nMandatory visual continuity reference: @last_keyframe is the automatically saved final frame of the immediately preceding scene. Use it as the exact opening visual anchor; preserve subject identity and placement, camera angle, lighting, and environment. Treat @last_keyframe as an image reference, not a character." : "";
+  const declaredReferences = (scene.referenceImages || []).filter((name) => name.toLowerCase() !== "last_keyframe");
+  const references = declaredReferences.length ? `\n\nUse these additional imported visual references: ${declaredReferences.map((name) => `@${name.replace(/^@+/, "")}`).join(", ")}.` : "";
   const duration = sceneDurationPrompt(scene);
-  return `${scene.prompt.trim()}${continuity}\n\nFormat: ${project.aspectRatio}.${duration ? ` ${duration}` : ""} cinematic anime scene. Preserve the existing audio direction.`;
+  return `${scene.prompt.trim()}${continuity}${canvaReference}${lastKeyframe}${references}\n\nFormat: ${project.aspectRatio}.${duration ? ` ${duration}` : ""} cinematic anime scene. Preserve the existing audio direction.`;
 }
 
 async function flowCommand(command) {
@@ -219,10 +262,10 @@ function cancelSceneResultWait(sceneId) {
   waiter.cancel();
 }
 
-async function runSceneCommand(scene, method, characterImages) {
+async function runSceneCommand(scene, method, characterImages, sceneIndex) {
   const completion = waitForSceneResult(scene.id);
   try {
-    const result = await flowCommand({ type: method, scene: { id: scene.id, prompt: fullPrompt(scene), characterImages } });
+    const result = await flowCommand({ type: method, scene: { id: scene.id, prompt: fullPrompt(scene, sceneIndex), characterImages } });
     if (!result?.ok) {
       const err = new Error(result?.error || "Flow không nhận lệnh.");
       err.code = result?.code || "FLOW_ERROR";
@@ -300,16 +343,25 @@ async function runScenes() {
       const scene = project.scenes[index];
       if (scene.status === "done" || scene.status === "skipped") continue;
       if (!scene.prompt.trim()) throw Object.assign(new Error(`Cảnh ${index + 1} chưa có prompt.`), { code: "MISSING_PROMPT" });
+      if (!scene.compositeImage?.data) throw Object.assign(new Error(`Cảnh ${index + 1} chưa có ảnh Canva/ảnh tổng hợp. Hãy nhập ảnh cho từng cảnh trước khi chạy.`), { code: "SCENE_IMAGE_REQUIRED" });
+      if (index > 0 && !project.scenes[index - 1]?.keyframe?.data) throw Object.assign(new Error(`Cảnh ${index + 1} chưa có @last_keyframe từ cảnh ${index}. Hãy hoàn tất cảnh trước và lưu keyframe trước khi tiếp tục.`), { code: "KEYFRAME_REQUIRED" });
+      const durationMatch = String(scene.duration || "").match(/^(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds|giây)?$/i);
+      if (durationMatch && Number(durationMatch[1]) !== 8) throw Object.assign(new Error(`Cảnh ${index + 1} có ảnh Canva/keyframe nhưng đặt ${durationMatch[1]}s. Veo 3.1 Lite chỉ hỗ trợ Ingredients/References ở clip 8 giây; hãy đổi cảnh này thành 8s trước khi chạy.`), { code: "REFERENCE_DURATION_UNSUPPORTED" });
       const isFirst = index === 0;
-      const method = isFirst ? "GENERATE_SCENE" : "EXTEND_SCENE";
+      const transition = String(scene.transition || project.transitionMode || "extend").trim().toLowerCase();
+      const method = isFirst || transition === "independent" || transition === "jump to" ? "GENERATE_SCENE" : "EXTEND_SCENE";
       scene.status = "generating";
-      project.statusMessage = `${isFirst ? "Đang tạo" : method === "EXTEND_SCENE" ? "Đang Extend" : "Đang tạo với keyframe"} cảnh ${index + 1}/${project.scenes.length}…`;
+      project.statusMessage = `${isFirst ? "Đang tạo" : method === "EXTEND_SCENE" ? "Đang Extend" : "Đang tạo từ ảnh tham chiếu + keyframe"} cảnh ${index + 1}/${project.scenes.length}…`;
       persist();
       render();
-      const characterImages = project.characters
+      const characterImages = [
+        { ...scene.compositeImage, name: `@scene_${index + 1}_canva.jpg` },
+        ...(index > 0 ? [{ ...project.scenes[index - 1].keyframe, name: "@last_keyframe.jpg" }] : []),
+        ...project.characters
         .filter((character) => scene.characterIds.includes(character.id))
-        .flatMap((character) => (character.images || []).slice(0, 2));
-      await runSceneCommand(scene, method, characterImages);
+        .flatMap((character) => (character.images || []).slice(0, 2))
+      ];
+      await runSceneCommand(scene, method, characterImages, index);
       scene.status = "done";
       scene.note = "Đã nhận diện tín hiệu hoàn tất từ Flow.";
       project.statusMessage = `Hoàn tất cảnh ${index + 1}/${project.scenes.length}.`;
@@ -394,6 +446,7 @@ function extractCharacterMentions(...values) {
     for (const match of String(value || "").matchAll(pattern)) {
       const name = match[1];
       const key = characterKey(name);
+      if (key === "last_keyframe") continue;
       if (!key || seen.has(key)) continue;
       seen.add(key);
       mentions.push(name);
@@ -429,6 +482,9 @@ function scenesFromCsv(rows) {
       prompt: row.prompt || row.description || "",
       status: "pending",
       characterIds,
+      compositeImage: null,
+      keyframe: null,
+      referenceImages: String(row.reference_images || "").split(/[;,]/).map((name) => name.trim().replace(/^@+/, "")).filter(Boolean),
       characters: row.characters || mentions.map((name) => `@${name}`).join(", "),
       transition: row.transition || "",
       dialogue: row.dialogue || "",
@@ -452,6 +508,9 @@ function normalizeImportedScenes(scenes = []) {
     transition: scene.transition || "",
     dialogue: scene.dialogue || "",
     notes: scene.notes || "",
+    compositeImage: scene.compositeImage || null,
+    keyframe: scene.keyframe || null,
+    referenceImages: Array.isArray(scene.referenceImages) ? scene.referenceImages : String(scene.reference_images || "").split(/[;,]/).map((name) => name.trim().replace(/^@+/, "")).filter(Boolean),
     note: scene.note || ""
   }));
 }
@@ -482,6 +541,25 @@ async function addImageFiles(characterId, files) {
   persist(); renderCharacters();
 }
 
+async function addSceneComposite(sceneId, file) {
+  const scene = project.scenes.find((entry) => entry.id === sceneId);
+  if (!scene || !file) return;
+  if (!file.type.startsWith("image/")) { toast("Ảnh Canva phải là tệp hình ảnh."); return; }
+  if (file.size > 10 * 1024 * 1024) { toast("Ảnh tổng hợp vượt giới hạn 10 MB."); return; }
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const data = canvas.toDataURL("image/jpeg", 0.84);
+  bitmap.close();
+  scene.compositeImage = { name: file.name, data };
+  persist();
+  renderScenes();
+  toast(`Đã nhập ảnh Canva cho cảnh ${Number(scene.sceneNumber) || project.scenes.indexOf(scene) + 1}.`);
+}
+
 $("#projectTitle").addEventListener("input", (event) => { project.title = event.target.value; persist(); });
 $("#aspectRatio").addEventListener("change", (event) => { project.aspectRatio = event.target.value; persist(); renderScenes(); });
 $("#transitionMode").addEventListener("change", (event) => { project.transitionMode = event.target.value; persist(); renderScenes(); });
@@ -506,6 +584,12 @@ $("#sceneList").addEventListener("input", (event) => {
   if (scene) { scene.prompt = event.target.value; persist(); }
 });
 $("#sceneList").addEventListener("change", (event) => {
+  const compositeSceneId = event.target.dataset.sceneCanva;
+  if (compositeSceneId) {
+    addSceneComposite(compositeSceneId, event.target.files?.[0]);
+    event.target.value = "";
+    return;
+  }
   const id = event.target.dataset.sceneCharacters;
   if (!id) return;
   const scene = project.scenes.find((entry) => entry.id === id);
@@ -577,7 +661,10 @@ $("#exportButton").addEventListener("click", () => downloadFile("flow-scene-dire
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "FLOW_STATUS" && message.sceneId) {
     const scene = project.scenes.find((entry) => entry.id === message.sceneId);
-    if (scene && message.status === "scene-done") scene.status = "done";
+    if (scene && message.status === "scene-done") {
+      scene.status = "done";
+      if (message.keyframe?.data) scene.keyframe = message.keyframe;
+    }
     if (message.status === "scene-done") sceneResultWaiters.get(message.sceneId)?.resolve(message);
     project.statusMessage = message.message || project.statusMessage;
     persist(); render();

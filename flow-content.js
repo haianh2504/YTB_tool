@@ -247,6 +247,56 @@ function videoSignature(video) {
   ].filter(Boolean).join("|");
 }
 
+async function extractLastKeyframe(video, signal) {
+  if (!video) throw Object.assign(new Error("Không tìm thấy video để cắt keyframe cuối."), { code: "KEYFRAME_CAPTURE_FAILED" });
+  const ready = await waitFor(() => video.videoWidth > 0 && video.videoHeight > 0 && Number.isFinite(video.duration) && video.duration > 0, 12000, 250, signal);
+  if (!ready) throw Object.assign(new Error("Video đã hoàn tất nhưng Flow chưa tải đủ dữ liệu để cắt keyframe cuối."), { code: "KEYFRAME_CAPTURE_FAILED" });
+
+  const originalTime = video.currentTime;
+  const wasPlaying = !video.paused;
+  const endTime = Math.max(0, video.duration - 0.08);
+  try {
+    video.pause();
+    if (Math.abs(video.currentTime - endTime) > 0.12) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => finish(new Error("Timeout khi tua tới frame cuối.")), 6000);
+        const onSeeked = () => finish();
+        const onError = () => finish(new Error("Không tua được video tới frame cuối."));
+        const onAbort = () => finish(Object.assign(new Error("Đã dừng workflow theo yêu cầu."), { code: "CANCELLED" }));
+        function finish(error) {
+          clearTimeout(timer);
+          video.removeEventListener("seeked", onSeeked);
+          video.removeEventListener("error", onError);
+          signal?.removeEventListener("abort", onAbort);
+          error ? reject(error) : resolve();
+        }
+        video.addEventListener("seeked", onSeeked, { once: true });
+        video.addEventListener("error", onError, { once: true });
+        signal?.addEventListener("abort", onAbort, { once: true });
+        video.currentTime = endTime;
+      });
+    }
+
+    const scale = Math.min(1, 1280 / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Không khởi tạo được canvas cho keyframe.");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const data = canvas.toDataURL("image/jpeg", 0.84);
+    return { name: "@last_keyframe.jpg", data, width: canvas.width, height: canvas.height };
+  } catch (error) {
+    if (error.code === "CANCELLED") throw error;
+    throw Object.assign(new Error(`Không thể cắt keyframe cuối từ clip vừa tạo. ${error?.message || "Flow có thể đang chặn đọc frame video."} Hãy lưu frame cuối thủ công hoặc thử lại cảnh này trước khi tiếp tục.`), { code: "KEYFRAME_CAPTURE_FAILED" });
+  } finally {
+    try {
+      if (Number.isFinite(originalTime) && Math.abs(video.currentTime - originalTime) > 0.12) video.currentTime = originalTime;
+      if (wasPlaying) video.play().catch(() => {});
+    } catch {}
+  }
+}
+
 function snapshotVideos() {
   return new Map(queryAllDeep("video").map((video) => [video, videoSignature(video)]));
 }
@@ -283,10 +333,11 @@ async function waitForGeneration(scene, beforeVideos, signal) {
   if (outcome.kind === "failure") throw Object.assign(new Error("Flow báo tạo video thất bại. Cần kiểm tra trước khi thử lại."), { code: "GENERATION_FAILED" });
 
   rememberCompletedVideo(completedVideo);
-  report("FLOW_STATUS", { status: "scene-done", sceneId: scene.id, message: "Flow có dấu hiệu đã hoàn tất cảnh." });
+  const keyframe = await extractLastKeyframe(completedVideo, signal);
+  report("FLOW_STATUS", { status: "scene-done", sceneId: scene.id, keyframe, message: `Hoàn tất cảnh và đã lưu keyframe cuối thành @last_keyframe.` });
 }
 
-async function ensureExtendCompatibleModel(signal) {
+async function ensureExtendCompatibleModel(signal, requireReferenceDuration = false) {
   throwIfCancelled(signal);
   const agent = visibleButtons().find((button) => /^agent$/i.test(actionText(button)));
   const agentEnabled = agent && (
@@ -300,8 +351,16 @@ async function ensureExtendCompatibleModel(signal) {
   }
 
   const settings = findAction(/settings trigger|generation settings|^settings$|^cài đặt$/i);
+  const initialSettingsLabel = controlText(settings);
   settings?.click();
   await delay(600, signal);
+
+  if (requireReferenceDuration && !/\b8\s*s(?:ec(?:ond)?s?)?\b/i.test(initialSettingsLabel)) {
+    const eightSeconds = await waitFor(() => findAction(/^(?:8\s*s(?:ec(?:ond)?s?)?|8s video)$/i), 5000, 250, signal);
+    if (!eightSeconds) throw Object.assign(new Error("Không xác nhận được chế độ 8 giây cần cho ảnh Ingredients/References. Chọn Video → Veo 3.1 Lite → 8s rồi thử lại."), { code: "REFERENCE_DURATION_UNSUPPORTED" });
+    eightSeconds.click();
+    await delay(500, signal);
+  }
 
   let lite = findAction(/veo\s*3(?:\.1)?\s*(?:-|–)?\s*lite/i);
   if (!lite) {
@@ -419,7 +478,7 @@ async function openExtendForLatestVideo(signal) {
 async function submitScene(scene, signal) {
   const box = await waitFor(findPromptBox, 15000, 500, signal);
   if (!box) throw new Error("Không tìm thấy ô prompt trên Flow.");
-  await ensureExtendCompatibleModel(signal);
+  await ensureExtendCompatibleModel(signal, (scene.characterImages || []).length > 0);
   throwIfCancelled(signal);
   const beforeVideos = snapshotVideos();
   setPromptValue(box, scene.prompt);
@@ -450,6 +509,7 @@ async function submitScene(scene, signal) {
 }
 
 async function extendScene(scene, signal) {
+  await ensureExtendCompatibleModel(signal, (scene.characterImages || []).length > 0);
   let extend = await openExtendForLatestVideo(signal);
   if (!extend) {
     const target = resolvePreferredVideo() || latestVisibleVideo();
