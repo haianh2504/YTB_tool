@@ -42,7 +42,7 @@ function setPromptValue(box, value) {
 }
 
 function visibleButtons() {
-  return queryAllDeep('button, [role="button"], [role="menuitem"], [data-testid*="generate" i], [data-testid*="create" i], [data-testid*="send" i]')
+  return queryAllDeep('button, [role="button"], [role="menuitem"], [data-testid*="generate" i], [data-testid*="create" i], [data-testid*="send" i], [data-testid*="extend" i], [aria-label*="extend" i], [title*="extend" i], [data-testid*="more" i], [aria-label*="more" i], [title*="more" i]')
     .filter((el) => el.getClientRects().length && !el.hasAttribute("disabled") && el.getAttribute("aria-disabled") !== "true");
 }
 
@@ -329,12 +329,28 @@ function buttonsInVideoAncestors(video) {
   const buttons = [];
   let node = video;
   for (let depth = 0; node && depth < 9; depth++, node = node.parentElement || node.getRootNode()?.host) {
-    buttons.push(...queryAllDeep('button, [role="button"], [role="menuitem"]', node)
+    buttons.push(...queryAllDeep('button, [role="button"], [role="menuitem"], [data-testid*="extend" i], [aria-label*="extend" i], [title*="extend" i], [data-testid*="more" i], [aria-label*="more" i], [title*="more" i]', node)
       .filter((button) => button !== video && button.getClientRects().length));
     const extend = buttons.find((button) => /\bextend\b|continue (?:this )?(?:video|clip)|nối dài|mở rộng/i.test(controlText(button)));
     if (extend) return { buttons, extend };
   }
   return { buttons, extend: null };
+}
+
+function videoNearbyActionsDescription(video) {
+  if (!video) return "";
+  const rect = video.getBoundingClientRect();
+  const center = [rect.left + rect.width / 2, rect.top + rect.height / 2];
+  return visibleButtons()
+    .map((element) => {
+      const item = element.getBoundingClientRect();
+      return { label: controlText(element).trim() || "(nút biểu tượng)", distance: Math.hypot(item.left + item.width / 2 - center[0], item.top + item.height / 2 - center[1]) };
+    })
+    .filter(({ distance }) => distance <= 700)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 8)
+    .map(({ label, distance }) => `${label} ~${Math.round(distance)}px`)
+    .join("; ");
 }
 
 function findExtendForVideo(video) {
@@ -353,9 +369,7 @@ function activateMedia(video) {
 
 function nearestMoreMenu(video) {
   const candidates = visibleButtons().filter((button) =>
-    /more (?:options|actions)|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(
-      `${textOf(button)} ${button.getAttribute("aria-label") || ""} ${button.getAttribute("data-tooltip") || ""}`
-    )
+    /\bmore\b|options?|actions?|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
   );
   if (!candidates.length || !video) return candidates.at(-1) || null;
   const rect = video.getBoundingClientRect();
@@ -382,7 +396,7 @@ async function openExtendForLatestVideo() {
 
   const controls = buttonsInVideoAncestors(video).buttons;
   const more = nearestMoreMenu(video) || controls.filter((button) =>
-    /more (?:options|actions)|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
+    /\bmore\b|options?|actions?|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
   ).at(0);
   if (more) {
     more.click();
@@ -426,7 +440,11 @@ async function submitScene(scene) {
 
 async function extendScene(scene) {
   let extend = await openExtendForLatestVideo();
-  if (!extend) throw Object.assign(new Error("Không tìm thấy thao tác Extend trên video vừa hoàn tất. Hãy mở menu của đúng video trong Flow và kiểm tra thao tác Extend; extension đã dừng để tránh nối nhầm video."), { code: "EXTEND_ACTION_NOT_FOUND" });
+  if (!extend) {
+    const target = resolvePreferredVideo() || latestVisibleVideo();
+    const nearby = videoNearbyActionsDescription(target);
+    throw Object.assign(new Error(`Không tìm thấy thao tác Extend trên video vừa hoàn tất. Extension đã thử nút trong card và menu More options.${nearby ? ` Các nút gần video: ${nearby}` : " Không nhận diện được nút nào gần video."} Workflow dừng để tránh nối nhầm clip.`), { code: "EXTEND_ACTION_NOT_FOUND" });
+  }
   extend.click();
   const box = await waitFor(findPromptBox, 10000);
   if (!box) throw new Error("Đã mở Extend nhưng không tìm thấy ô prompt.");
