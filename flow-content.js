@@ -47,6 +47,7 @@ function visibleButtons() {
 }
 
 let preferredExtendTarget = null;
+let activeWorkflowJob = null;
 
 function controlText(element) {
   const ownLabels = [
@@ -136,18 +137,44 @@ function report(type, data = {}) {
   chrome.runtime.sendMessage({ type, ...data }).catch(() => {});
 }
 
-async function waitFor(predicate, timeout = 45000, interval = 500) {
+function throwIfCancelled(signal) {
+  if (signal?.aborted) throw Object.assign(new Error("Đã dừng workflow theo yêu cầu."), { code: "CANCELLED" });
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error("Đã dừng workflow theo yêu cầu."), { code: "CANCELLED" }));
+      return;
+    }
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    function abort() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(Object.assign(new Error("Đã dừng workflow theo yêu cầu."), { code: "CANCELLED" }));
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function waitFor(predicate, timeout = 45000, interval = 500, signal) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
+    throwIfCancelled(signal);
     const result = predicate();
     if (result) return result;
-    await new Promise((resolve) => setTimeout(resolve, interval));
+    await delay(interval, signal);
   }
   return null;
 }
 
-async function attachReferenceImages(images = []) {
+async function attachReferenceImages(images = [], signal) {
   if (!images.length) return;
+  throwIfCancelled(signal);
 
   const transfer = new DataTransfer();
   for (const image of images) {
@@ -168,13 +195,13 @@ async function attachReferenceImages(images = []) {
   if (!input) {
     const addIngredients = findAction(/add ingredients(?: to the prompt box)?|add media|thêm (?:nguyên liệu|tài nguyên|ảnh)/i);
     addIngredients?.click();
-    input = await waitFor(findImageInput, 3000, 200);
+    input = await waitFor(findImageInput, 3000, 200, signal);
   }
 
   if (!input) {
     const uploadMedia = findAction(/^(upload media|upload image|upload|tải (?:ảnh|lên))$/i);
     uploadMedia?.click();
-    input = await waitFor(findImageInput, 4000, 200);
+    input = await waitFor(findImageInput, 4000, 200, signal);
   }
 
   if (input) {
@@ -200,12 +227,12 @@ async function attachReferenceImages(images = []) {
     if (input?.files?.length) return true;
     const text = pageText().toLowerCase();
     return [...transfer.files].some((file) => text.includes(file.name.toLowerCase()));
-  }, 8000, 300);
+  }, 8000, 300, signal);
   if (!attached) {
     throw new Error("Flow đã mở bộ tải ảnh nhưng không xác nhận được ảnh tham chiếu. Cảnh chưa được gửi.");
   }
 
-  await new Promise((resolve) => setTimeout(resolve, 1800));
+  await delay(1800, signal);
   const closeDialog = findAction(/^(close|done|đóng|xong)$/i);
   closeDialog?.click();
 }
@@ -234,7 +261,7 @@ function rememberCompletedVideo(video) {
   if (video) preferredExtendTarget = { element: video, signature: videoSignature(video) };
 }
 
-async function waitForGeneration(scene, beforeVideos) {
+async function waitForGeneration(scene, beforeVideos, signal) {
   let settledTicks = 0;
   let completedVideo = null;
   const outcome = await waitFor(() => {
@@ -248,7 +275,7 @@ async function waitForGeneration(scene, beforeVideos) {
     settledTicks = !current.running && resultReady ? settledTicks + 1 : 0;
     if (settledTicks >= 3) return { kind: "complete" };
     return null;
-  }, 12 * 60 * 1000, 2000);
+  }, 12 * 60 * 1000, 2000, signal);
 
   if (!outcome) throw Object.assign(new Error("Chưa xác nhận được Flow hoàn tất sau 12 phút. Workflow đã dừng để tránh tạo trùng."), { code: "TIMEOUT" });
   if (outcome.kind === "credits") throw Object.assign(new Error("Flow báo hết hoặc không đủ credits."), { code: "NO_CREDITS" });
@@ -259,7 +286,8 @@ async function waitForGeneration(scene, beforeVideos) {
   report("FLOW_STATUS", { status: "scene-done", sceneId: scene.id, message: "Flow có dấu hiệu đã hoàn tất cảnh." });
 }
 
-async function ensureExtendCompatibleModel() {
+async function ensureExtendCompatibleModel(signal) {
+  throwIfCancelled(signal);
   const agent = visibleButtons().find((button) => /^agent$/i.test(actionText(button)));
   const agentEnabled = agent && (
     agent.getAttribute("aria-pressed") === "true" ||
@@ -268,12 +296,12 @@ async function ensureExtendCompatibleModel() {
   );
   if (agentEnabled) {
     agent.click();
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    await delay(700, signal);
   }
 
   const settings = findAction(/settings trigger|generation settings|^settings$|^cài đặt$/i);
   settings?.click();
-  await new Promise((resolve) => setTimeout(resolve, 600));
+  await delay(600, signal);
 
   let lite = findAction(/veo\s*3(?:\.1)?\s*(?:-|–)?\s*lite/i);
   if (!lite) {
@@ -282,7 +310,7 @@ async function ensureExtendCompatibleModel() {
       !/settings/i.test(actionText(button))
     );
     modelControl?.click();
-    lite = await waitFor(() => findAction(/veo\s*3(?:\.1)?\s*(?:-|–)?\s*lite/i), 5000, 250);
+    lite = await waitFor(() => findAction(/veo\s*3(?:\.1)?\s*(?:-|–)?\s*lite/i), 5000, 250, signal);
   }
 
   if (!lite) {
@@ -290,7 +318,7 @@ async function ensureExtendCompatibleModel() {
   }
 
   lite.click();
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  await delay(800, signal);
   return true;
 }
 
@@ -324,19 +352,6 @@ function resolvePreferredVideo() {
   return null;
 }
 
-function buttonsInVideoAncestors(video) {
-  if (!video) return { buttons: [], extend: null };
-  const buttons = [];
-  let node = video;
-  for (let depth = 0; node && depth < 9; depth++, node = node.parentElement || node.getRootNode()?.host) {
-    buttons.push(...queryAllDeep('button, [role="button"], [role="menuitem"], [data-testid*="extend" i], [aria-label*="extend" i], [title*="extend" i], [data-testid*="more" i], [aria-label*="more" i], [title*="more" i]', node)
-      .filter((button) => button !== video && button.getClientRects().length));
-    const extend = buttons.find((button) => /\bextend\b|continue (?:this )?(?:video|clip)|nối dài|mở rộng/i.test(controlText(button)));
-    if (extend) return { buttons, extend };
-  }
-  return { buttons, extend: null };
-}
-
 function videoNearbyActionsDescription(video) {
   if (!video) return "";
   const rect = video.getBoundingClientRect();
@@ -353,123 +368,122 @@ function videoNearbyActionsDescription(video) {
     .join("; ");
 }
 
-function findExtendForVideo(video) {
-  return buttonsInVideoAncestors(video).extend;
+function videoCardContainer(video) {
+  if (!video) return null;
+  let node = video.parentElement || video.getRootNode()?.host;
+  for (let depth = 0; node && depth < 10; depth++, node = node.parentElement || node.getRootNode()?.host) {
+    const videos = queryAllDeep("video", node).filter((item) => item.getClientRects().length);
+    if (videos.length > 2) continue;
+    const cardActions = queryAllDeep('button, [role="button"], [role="menuitem"]', node)
+      .filter((button) => button.getClientRects().length)
+      .filter((button) => /more options|more actions|reuse prompt|add to scene|add to prompt/i.test(controlText(button)));
+    if (cardActions.length) return node;
+  }
+  return video;
 }
 
 function activateMedia(video) {
-  if (!video) return;
-  const target = video.closest('button, [role="button"], [tabindex], article') || video;
-  target.scrollIntoView({ block: "center", inline: "center" });
+  if (!video) return null;
+  const card = videoCardContainer(video);
+  card.scrollIntoView({ block: "center", inline: "center" });
   for (const type of ["pointerover", "mouseover", "mouseenter"]) {
-    target.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
+    card.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
   }
-  target.click();
+  // Select the clip itself. Clicking its play button only starts playback and
+  // leaves Flow in the asset grid, where Extend is not available.
+  card.click();
+  return card;
 }
 
-function nearestMoreMenu(video) {
-  const candidates = visibleButtons().filter((button) =>
-    /\bmore\b|options?|actions?|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
-  );
-  if (!candidates.length || !video) return candidates.at(-1) || null;
-  const rect = video.getBoundingClientRect();
-  const center = [rect.left + rect.width / 2, rect.top + rect.height / 2];
-  return candidates.sort((a, b) => {
-    const distance = (element) => {
-      const r = element.getBoundingClientRect();
-      return Math.hypot(r.left + r.width / 2 - center[0], r.top + r.height / 2 - center[1]);
-    };
-    return distance(a) - distance(b);
-  })[0];
-}
-
-async function openExtendForLatestVideo() {
+async function openExtendForLatestVideo(signal) {
+  throwIfCancelled(signal);
   const video = resolvePreferredVideo() || latestVisibleVideo();
   if (!video) return null;
 
-  let extend = findExtendForVideo(video);
-  if (extend) return extend;
-
   activateMedia(video);
-  extend = await waitFor(() => findExtendForVideo(video), 6000, 300);
-  if (extend) return extend;
-
-  const controls = buttonsInVideoAncestors(video).buttons;
-  const more = nearestMoreMenu(video) || controls.filter((button) =>
-    /\bmore\b|options?|actions?|overflow|kebab|menu|thêm tùy chọn|tùy chọn khác/i.test(controlText(button))
-  ).at(0);
-  if (more) {
-    more.click();
-    // Flow may render its menu in a portal outside the video card.
-    extend = await waitFor(findExtendAction, 7000, 300);
-    if (extend) return extend;
-  }
-
-  return null;
+  // Flow's documented workflow puts Extend in the bottom prompt controls after
+  // selecting a clip; it is not in the card's More options menu.
+  return waitFor(findExtendAction, 12000, 300, signal);
 }
 
-async function submitScene(scene) {
-  const box = await waitFor(findPromptBox, 15000);
+async function submitScene(scene, signal) {
+  const box = await waitFor(findPromptBox, 15000, 500, signal);
   if (!box) throw new Error("Không tìm thấy ô prompt trên Flow.");
-  await ensureExtendCompatibleModel();
+  await ensureExtendCompatibleModel(signal);
+  throwIfCancelled(signal);
   const beforeVideos = snapshotVideos();
   setPromptValue(box, scene.prompt);
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  await attachReferenceImages(scene.characterImages || []);
+  await delay(600, signal);
+  await attachReferenceImages(scene.characterImages || [], signal);
 
   const signals = pageSignals();
   if (signals.lowCredits) throw Object.assign(new Error("Flow báo không đủ credits."), { code: "NO_CREDITS" });
   if (signals.policy) throw Object.assign(new Error("Flow từ chối nội dung theo chính sách."), { code: "POLICY" });
 
-  const currentBox = await waitFor(findPromptBox, 5000, 250);
+  const currentBox = await waitFor(findPromptBox, 5000, 250, signal);
   const generate = currentBox && await waitFor(
     () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|arrow.?forward|arrow.?up|north.?east|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
     10000,
-    300
+    300,
+    signal
   );
   if (!generate) {
     const nearby = nearbyControlsDescription(currentBox);
     throw new Error(`Đã điền prompt nhưng chưa xác định được nút gửi an toàn; extension chưa gửi tác vụ.${nearby ? ` Các nút gần ô prompt: ${nearby}` : " Không thấy nút khả dụng gần ô prompt."}`);
   }
+  throwIfCancelled(signal);
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi cảnh đến Flow." });
 
-  await waitForGeneration(scene, beforeVideos);
+  await waitForGeneration(scene, beforeVideos, signal);
   return { ok: true };
 }
 
-async function extendScene(scene) {
-  let extend = await openExtendForLatestVideo();
+async function extendScene(scene, signal) {
+  let extend = await openExtendForLatestVideo(signal);
   if (!extend) {
     const target = resolvePreferredVideo() || latestVisibleVideo();
     const nearby = videoNearbyActionsDescription(target);
-    throw Object.assign(new Error(`Không tìm thấy thao tác Extend trên video vừa hoàn tất. Extension đã thử nút trong card và menu More options.${nearby ? ` Các nút gần video: ${nearby}` : " Không nhận diện được nút nào gần video."} Workflow dừng để tránh nối nhầm clip.`), { code: "EXTEND_ACTION_NOT_FOUND" });
+    throw Object.assign(new Error(`Đã chọn video vừa hoàn tất nhưng Flow không hiển thị thao tác Extend ở thanh dưới cạnh prompt.${nearby ? ` Các nút gần video: ${nearby}` : " Không đọc được các nút của video."} Kiểm tra video có phải clip Veo 3.1 dài 8 giây không; workflow đã dừng để tránh tạo sai cảnh.`), { code: "EXTEND_ACTION_NOT_FOUND" });
   }
+  throwIfCancelled(signal);
   extend.click();
-  const box = await waitFor(findPromptBox, 10000);
+  const box = await waitFor(findPromptBox, 10000, 500, signal);
   if (!box) throw new Error("Đã mở Extend nhưng không tìm thấy ô prompt.");
   const beforeVideos = snapshotVideos();
   setPromptValue(box, scene.prompt);
-  await attachReferenceImages(scene.characterImages || []);
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const currentBox = await waitFor(findPromptBox, 5000, 250);
+  await attachReferenceImages(scene.characterImages || [], signal);
+  await delay(500, signal);
+  const currentBox = await waitFor(findPromptBox, 5000, 250, signal);
   const generate = currentBox && await waitFor(
     () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|arrow.?forward|arrow.?up|north.?east|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
     10000,
-    300
+    300,
+    signal
   );
   if (!generate) {
     const nearby = nearbyControlsDescription(currentBox);
     throw new Error(`Đã chuẩn bị prompt Extend nhưng chưa xác định được nút gửi an toàn; extension chưa gửi tác vụ.${nearby ? ` Các nút gần ô prompt: ${nearby}` : " Không thấy nút khả dụng gần ô prompt."}`);
   }
+  throwIfCancelled(signal);
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi phần Extend đến Flow." });
-  await waitForGeneration(scene, beforeVideos);
+  await waitForGeneration(scene, beforeVideos, signal);
   return { ok: true };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || !["FILL_PROMPT", "GENERATE_SCENE", "EXTEND_SCENE", "CHECK_FLOW"].includes(message.type)) return;
+  if (!message || !["FILL_PROMPT", "GENERATE_SCENE", "EXTEND_SCENE", "CHECK_FLOW", "CANCEL_WORKFLOW"].includes(message.type)) return;
+
+  if (message.type === "CANCEL_WORKFLOW") {
+    if (activeWorkflowJob) {
+      activeWorkflowJob.controller.abort();
+    }
+    const cancelButton = findAction(/cancel(?: video| generation| task)?|stop (?:generating|generation)|hủy(?: tạo| tác vụ)?/i);
+    if (pageSignals().running) cancelButton?.click();
+    sendResponse({ ok: true, cancelled: true });
+    return;
+  }
 
   if (message.type === "CHECK_FLOW") {
     sendResponse({ ok: true, connected: !!findPromptBox(), signals: pageSignals() });
@@ -489,11 +503,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // Return immediately for generation commands. Flow can take many minutes
   // to render a clip, longer than Chrome keeps an extension message channel.
+  if (activeWorkflowJob) {
+    sendResponse({ ok: false, code: "WORKFLOW_BUSY", error: "Một cảnh Flow vẫn đang chạy." });
+    return;
+  }
+  const job = { sceneId: message.scene?.id, controller: new AbortController() };
+  activeWorkflowJob = job;
   sendResponse({ ok: true, accepted: true, sceneId: message.scene?.id });
   (async () => {
-    if (message.type === "GENERATE_SCENE") await submitScene(message.scene);
-    else await extendScene(message.scene);
+    if (message.type === "GENERATE_SCENE") await submitScene(message.scene, job.controller.signal);
+    else await extendScene(message.scene, job.controller.signal);
   })().catch((error) => {
-    report("FLOW_ERROR", { sceneId: message.scene?.id, code: error.code || "UI_UNRECOGNIZED", message: error.message });
+    if (error.code !== "CANCELLED") report("FLOW_ERROR", { sceneId: message.scene?.id, code: error.code || "UI_UNRECOGNIZED", message: error.message });
+  }).finally(() => {
+    if (activeWorkflowJob === job) activeWorkflowJob = null;
   });
 });

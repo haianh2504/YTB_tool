@@ -61,8 +61,9 @@ function render() {
   $("#projectTitle").value = project.title;
   $("#aspectRatio").value = project.aspectRatio;
   $("#transitionMode").value = project.transitionMode;
-  $("#runButton").disabled = loopActive;
+  $("#runButton").disabled = loopActive || (project.status === "paused-no-credits" && project.running);
   $("#runButton").querySelector("span:last-child").textContent = project.status === "paused" || project.status === "paused-no-credits" ? "Tiếp tục tự chạy" : loopActive ? "Đang chạy…" : "Bắt đầu tự chạy";
+  $("#pauseButton").disabled = !project.running;
   $("#statusBar").dataset.state = project.status === "paused-no-credits" || project.status === "paused-policy" ? "error" : project.status;
   $("#statusText").textContent = project.statusMessage;
   const totalScenes = project.scenes.length;
@@ -264,8 +265,13 @@ function delay(ms) {
 
 async function waitForCredits() {
   setProjectStatus("paused-no-credits", "Hết credits · đang chờ Flow sẵn sàng trở lại…");
+  let elapsed = 0;
   while (project.running) {
-    await delay(60000);
+    await delay(250);
+    if (!project.running) break;
+    elapsed += 250;
+    if (elapsed < 60000) continue;
+    elapsed = 0;
     const result = await flowCommand({ type: "CHECK_FLOW" }).catch(() => null);
     if (result?.ok && !result.signals?.lowCredits) {
       toast("Flow không còn báo hết credits. Tiếp tục từ cảnh đang dở.");
@@ -320,8 +326,14 @@ async function runScenes() {
     }
   } catch (error) {
     const current = project.scenes.find((scene) => scene.status === "generating");
-    if (current) current.status = error.code === "NO_CREDITS" ? "pending" : "error";
+    if (current) current.status = ["NO_CREDITS", "CANCELLED"].includes(error.code) ? "pending" : "error";
     project.running = false;
+    if (error.code === "CANCELLED") {
+      project.status = "paused";
+      project.statusMessage = "Đã dừng workflow. Cảnh đang chạy được giữ lại để tiếp tục sau.";
+      toast("Đã dừng workflow.");
+      return;
+    }
     if (error.code === "NO_CREDITS") {
       project.running = true;
       project.status = "paused-no-credits";
@@ -476,9 +488,15 @@ $("#transitionMode").addEventListener("change", (event) => { project.transitionM
 $("#runButton").addEventListener("click", () => runScenes());
 $("#pauseButton").addEventListener("click", () => {
   project.running = false;
-  if (loopActive) setProjectStatus("paused", "Đã yêu cầu tạm dừng. Cảnh đang tạo sẽ được chờ kết thúc.");
-  else setProjectStatus("paused", "Đã tạm dừng. Tiến trình được lưu.");
-  toast("Đã gửi yêu cầu tạm dừng.");
+  const scene = project.scenes.find((entry) => entry.status === "generating");
+  if (scene) scene.status = "pending";
+  project.status = "paused";
+  project.statusMessage = "Đã dừng workflow. Đang hủy thao tác Flow hiện tại…";
+  persist();
+  render();
+  if (scene) sceneResultWaiters.get(scene.id)?.reject(Object.assign(new Error("Đã dừng workflow theo yêu cầu."), { code: "CANCELLED" }));
+  flowCommand({ type: "CANCEL_WORKFLOW" }).catch(() => {});
+  toast("Đã dừng workflow.");
 });
 $("#checkFlow").addEventListener("click", async () => { const ok = await checkFlow(); if (ok) toast("Đã kết nối với trang Flow."); });
 $("#sceneList").addEventListener("input", (event) => {
