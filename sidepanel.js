@@ -13,6 +13,7 @@ let project = structuredClone(DEFAULT_PROJECT);
 let loopActive = false;
 let saveTimer;
 let toastTimer;
+const sceneResultWaiters = new Map();
 const $ = (selector) => document.querySelector(selector);
 
 function persist() {
@@ -197,6 +198,43 @@ async function flowCommand(command) {
   return chrome.runtime.sendMessage({ type: "FLOW_COMMAND", command });
 }
 
+function waitForSceneResult(sceneId, timeoutMs = 13 * 60 * 1000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      sceneResultWaiters.delete(sceneId);
+      reject(Object.assign(new Error("Flow chưa gửi tín hiệu hoàn tất sau 13 phút. Workflow đã dừng để tránh tạo trùng."), { code: "TIMEOUT" }));
+    }, timeoutMs);
+    sceneResultWaiters.set(sceneId, {
+      resolve(value) { clearTimeout(timer); sceneResultWaiters.delete(sceneId); resolve(value); },
+      reject(error) { clearTimeout(timer); sceneResultWaiters.delete(sceneId); reject(error); },
+      cancel() { clearTimeout(timer); sceneResultWaiters.delete(sceneId); }
+    });
+  });
+}
+
+function cancelSceneResultWait(sceneId) {
+  const waiter = sceneResultWaiters.get(sceneId);
+  if (!waiter) return;
+  waiter.cancel();
+}
+
+async function runSceneCommand(scene, method, characterImages) {
+  const completion = waitForSceneResult(scene.id);
+  try {
+    const result = await flowCommand({ type: method, scene: { id: scene.id, prompt: fullPrompt(scene), characterImages } });
+    if (!result?.ok) {
+      const err = new Error(result?.error || "Flow không nhận lệnh.");
+      err.code = result?.code || "FLOW_ERROR";
+      throw err;
+    }
+    if (result.accepted) await completion;
+    else cancelSceneResultWait(scene.id);
+  } catch (error) {
+    cancelSceneResultWait(scene.id);
+    throw error;
+  }
+}
+
 function setProjectStatus(status, message) {
   project.status = status;
   project.statusMessage = message;
@@ -265,12 +303,7 @@ async function runScenes() {
       const characterImages = project.characters
         .filter((character) => scene.characterIds.includes(character.id))
         .flatMap((character) => (character.images || []).slice(0, 2));
-      const result = await flowCommand({ type: method, scene: { id: scene.id, prompt: fullPrompt(scene), characterImages } });
-      if (!result?.ok) {
-        const err = new Error(result?.error || "Tác vụ Flow không hoàn tất.");
-        err.code = result?.code || "FLOW_ERROR";
-        throw err;
-      }
+      await runSceneCommand(scene, method, characterImages);
       scene.status = "done";
       scene.note = "Đã nhận diện tín hiệu hoàn tất từ Flow.";
       project.statusMessage = `Hoàn tất cảnh ${index + 1}/${project.scenes.length}.`;
@@ -527,12 +560,14 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "FLOW_STATUS" && message.sceneId) {
     const scene = project.scenes.find((entry) => entry.id === message.sceneId);
     if (scene && message.status === "scene-done") scene.status = "done";
+    if (message.status === "scene-done") sceneResultWaiters.get(message.sceneId)?.resolve(message);
     project.statusMessage = message.message || project.statusMessage;
     persist(); render();
   }
   if (message?.type === "FLOW_ERROR") {
     const scene = project.scenes.find((entry) => entry.id === message.sceneId);
     if (scene && message.code !== "NO_CREDITS") scene.status = "error";
+    sceneResultWaiters.get(message.sceneId)?.reject(Object.assign(new Error(message.message || "Flow gặp lỗi."), { code: message.code || "FLOW_ERROR" }));
     project.statusMessage = message.message || "Flow gặp lỗi.";
     persist(); render();
   }

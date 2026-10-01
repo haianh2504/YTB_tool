@@ -452,22 +452,30 @@ async function extendScene(scene) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !["FILL_PROMPT", "GENERATE_SCENE", "EXTEND_SCENE", "CHECK_FLOW"].includes(message.type)) return;
-  (async () => {
-    if (message.type === "CHECK_FLOW") {
-      sendResponse({ ok: true, connected: !!findPromptBox(), signals: pageSignals() });
-    } else if (message.type === "FILL_PROMPT") {
-      const box = await waitFor(findPromptBox, 8000);
-      if (!box) throw new Error("Không tìm thấy ô prompt trên Flow.");
-      setPromptValue(box, message.scene.prompt);
-      sendResponse({ ok: true });
-    } else if (message.type === "GENERATE_SCENE") {
-      sendResponse(await submitScene(message.scene));
-    } else {
-      sendResponse(await extendScene(message.scene));
+
+  if (message.type === "CHECK_FLOW") {
+    sendResponse({ ok: true, connected: !!findPromptBox(), signals: pageSignals() });
+    return;
+  }
+
+  if (message.type === "FILL_PROMPT") {
+    const box = findPromptBox();
+    if (!box) {
+      sendResponse({ ok: false, error: "Không tìm thấy ô prompt trên Flow." });
+      return;
     }
+    setPromptValue(box, message.scene.prompt);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // Return immediately for generation commands. Flow can take many minutes
+  // to render a clip, longer than Chrome keeps an extension message channel.
+  sendResponse({ ok: true, accepted: true, sceneId: message.scene?.id });
+  (async () => {
+    if (message.type === "GENERATE_SCENE") await submitScene(message.scene);
+    else await extendScene(message.scene);
   })().catch((error) => {
     report("FLOW_ERROR", { sceneId: message.scene?.id, code: error.code || "UI_UNRECOGNIZED", message: error.message });
-    sendResponse({ ok: false, code: error.code || "UI_UNRECOGNIZED", error: error.message });
   });
-  return true;
 });
