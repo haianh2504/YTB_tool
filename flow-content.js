@@ -42,7 +42,8 @@ function setPromptValue(box, value) {
 }
 
 function visibleButtons() {
-  return queryAllDeep('button, [role="button"], [role="menuitem"]').filter((el) => el.getClientRects().length && !el.hasAttribute("disabled") && el.getAttribute("aria-disabled") !== "true");
+  return queryAllDeep('button, [role="button"], [role="menuitem"], [data-testid*="generate" i], [data-testid*="create" i], [data-testid*="send" i]')
+    .filter((el) => el.getClientRects().length && !el.hasAttribute("disabled") && el.getAttribute("aria-disabled") !== "true");
 }
 
 let preferredExtendTarget = null;
@@ -408,7 +409,7 @@ async function submitScene(scene) {
 
   const currentBox = await waitFor(findPromptBox, 5000, 250);
   const generate = currentBox && await waitFor(
-    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
+    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|arrow.?forward|arrow.?up|north.?east|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
     10000,
     300
   );
@@ -435,7 +436,7 @@ async function extendScene(scene) {
   await new Promise((resolve) => setTimeout(resolve, 500));
   const currentBox = await waitFor(findPromptBox, 5000, 250);
   const generate = currentBox && await waitFor(
-    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
+    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|arrow.?forward|arrow.?up|north.?east|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
     10000,
     300
   );
