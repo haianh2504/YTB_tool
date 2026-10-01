@@ -5,7 +5,6 @@ const DEFAULT_PROJECT = {
   running: false,
   status: "idle",
   statusMessage: "Sẵn sàng · tiến trình được lưu tự động",
-  characters: [],
   scenes: []
 };
 
@@ -69,9 +68,8 @@ function render() {
   const totalScenes = project.scenes.length;
   $("#sceneCount").textContent = `${project.scenes.filter((scene) => scene.status === "done").length} / ${totalScenes} hoàn tất`;
   $("#projectSummary").textContent = totalScenes ? `${totalScenes} cảnh · ${projectDurationLabel()}` : "Nhập CSV để tạo danh sách cảnh";
-  $("#workflowSummary").textContent = totalScenes ? "Mỗi cảnh cần ảnh Canva · cảnh sau tự kèm @last_keyframe · ảnh tham chiếu Veo 3.1 Lite cần 8s · có thể chuyển tab khi chạy" : "Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh và @nhân vật";
+  $("#workflowSummary").textContent = totalScenes ? "Mỗi cảnh cần ảnh Canva · cảnh sau tự kèm @last_keyframe · ảnh tham chiếu Veo 3.1 Lite cần 8s · có thể chuyển tab khi chạy" : "Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh";
   renderScenes();
-  renderCharacters();
 }
 
 function renderScenes() {
@@ -137,83 +135,13 @@ function renderScenes() {
     }
     const actions = document.createElement("div");
     actions.className = "scene-actions";
-    const charSelect = document.createElement("select");
-    charSelect.className = "scene-characters";
-    charSelect.multiple = true;
-    charSelect.size = 1;
-    charSelect.title = "Chọn nhân vật: giữ Command hoặc Control để chọn nhiều";
-    project.characters.forEach((character) => {
-      const option = document.createElement("option");
-      option.value = character.id;
-      option.textContent = character.name || "Nhân vật mới";
-      option.selected = scene.characterIds.includes(character.id);
-      charSelect.append(option);
-    });
-    if (!project.characters.length) {
-      const option = document.createElement("option");
-      option.textContent = "Thêm nhân vật bên dưới";
-      option.disabled = true;
-      charSelect.append(option);
-    }
-    charSelect.dataset.sceneCharacters = scene.id;
     const fill = document.createElement("button");
     fill.className = "small-action";
     fill.textContent = "Điền";
     fill.title = "Chỉ điền prompt, không tạo video";
     fill.dataset.fillScene = scene.id;
-    actions.append(charSelect, fill);
+    actions.append(fill);
     card.append(head, prompt, referenceRow, actions);
-    list.append(card);
-  });
-}
-
-function renderCharacters() {
-  const list = $("#characterList");
-  list.replaceChildren();
-  $("#characterCount").textContent = `${project.characters.length} nhân vật · ảnh lưu trong Chrome`;
-  if (!project.characters.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = "Thêm nhân vật anime và ảnh tham chiếu để gán vào từng cảnh.";
-    list.append(empty);
-    return;
-  }
-  project.characters.forEach((character) => {
-    const card = document.createElement("article");
-    card.className = "character-card";
-    const thumb = character.images?.[0]?.data ? `<img class="character-thumb" src="${character.images[0].data}" alt="">` : `<div class="character-thumb"></div>`;
-    card.innerHTML = `<div class="character-top">${thumb}<input class="character-field character-name-input" data-character-name="${character.id}" value="${escapeHtml(character.name || "")}" placeholder="Tên nhân vật" maxlength="60"><button class="character-remove" data-remove-character="${character.id}" title="Xóa nhân vật" aria-label="Xóa nhân vật">×</button></div>`;
-    const description = document.createElement("textarea");
-    description.className = "character-field character-desc-input";
-    description.dataset.characterDescription = character.id;
-    description.placeholder = "Ngoại hình, trang phục, màu sắc, phụ kiện cần giữ nhất quán";
-    description.rows = 2;
-    description.value = character.description || "";
-    card.append(description);
-    if (character.images?.length > 1) {
-      const images = document.createElement("div");
-      images.className = "character-images";
-      character.images.slice(1).forEach((item) => {
-        const image = document.createElement("img");
-        image.src = item.data;
-        image.alt = item.name || "Ảnh tham chiếu";
-        images.append(image);
-      });
-      card.append(images);
-    }
-    const actions = document.createElement("div");
-    actions.className = "character-card-actions";
-    const uploadLabel = document.createElement("label");
-    uploadLabel.className = "file-label";
-    uploadLabel.textContent = "Thêm turnaround / ảnh";
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.multiple = true;
-    input.dataset.characterImages = character.id;
-    uploadLabel.append(input);
-    actions.append(uploadLabel);
-    card.append(actions);
     list.append(card);
   });
 }
@@ -223,13 +151,8 @@ function escapeHtml(value) {
 }
 
 function fullPrompt(scene, sceneIndex = project.scenes.findIndex((entry) => entry.id === scene.id)) {
-  const assigned = project.characters.filter((character) => scene.characterIds.includes(character.id));
-  const refs = assigned.map((character) => {
-    const mention = character.name ? `@${character.name.replace(/^@+/, "").replace(/\s+/g, "")}` : "nhân vật";
-    const details = [mention, character.description].filter(Boolean).join(": ");
-    return details;
-  });
-  const continuity = assigned.length ? `\n\nCharacter consistency: ${refs.join("; ")}. Keep each character's face, hairstyle, clothing, colors, proportions, and signature props consistent. Do not swap features or outfits between characters.` : "";
+  const mentionedCharacters = extractCharacterMentions(scene.prompt, scene.characters, scene.dialogue, scene.notes);
+  const continuity = mentionedCharacters.length ? `\n\nCharacter continuity (no character library is used): keep ${mentionedCharacters.map((name) => `@${name}`).join(", ")} visually consistent with their descriptions and the supplied scene images/keyframe. Preserve faces, hairstyles, outfits, colors, proportions, and signature props; never swap features between characters.` : "";
   const canvaReference = scene.compositeImage?.data ? `\n\nUse @scene_${sceneIndex + 1}_canva as this scene's unique Canva composition/reference image. Follow its layout and intended visual relationships while animating the scene.` : "";
   const lastKeyframe = sceneIndex > 0 ? "\n\nMandatory visual continuity reference: @last_keyframe is the automatically saved final frame of the immediately preceding scene. Use it as the exact opening visual anchor; preserve subject identity and placement, camera angle, lighting, and environment. Treat @last_keyframe as an image reference, not a character." : "";
   const declaredReferences = (scene.referenceImages || []).filter((name) => name.toLowerCase() !== "last_keyframe");
@@ -354,14 +277,11 @@ async function runScenes() {
       project.statusMessage = `${isFirst ? "Đang tạo" : method === "EXTEND_SCENE" ? "Đang Extend" : "Đang tạo từ ảnh tham chiếu + keyframe"} cảnh ${index + 1}/${project.scenes.length}…`;
       persist();
       render();
-      const characterImages = [
+      const referenceImages = [
         { ...scene.compositeImage, name: `@scene_${index + 1}_canva.jpg` },
-        ...(index > 0 ? [{ ...project.scenes[index - 1].keyframe, name: "@last_keyframe.jpg" }] : []),
-        ...project.characters
-        .filter((character) => scene.characterIds.includes(character.id))
-        .flatMap((character) => (character.images || []).slice(0, 2))
+        ...(index > 0 ? [{ ...project.scenes[index - 1].keyframe, name: "@last_keyframe.jpg" }] : [])
       ];
-      await runSceneCommand(scene, method, characterImages, index);
+      await runSceneCommand(scene, method, referenceImages, index);
       scene.status = "done";
       scene.note = "Đã nhận diện tín hiệu hoàn tất từ Flow.";
       project.statusMessage = `Hoàn tất cảnh ${index + 1}/${project.scenes.length}.`;
@@ -434,10 +354,6 @@ function parseCsv(text) {
   return rows.map((cells) => Object.fromEntries(headers.map((header, i) => [header, cells[i] || ""])));
 }
 
-function characterKey(name) {
-  return String(name || "").replace(/^@+/, "").trim().normalize("NFC").toLocaleLowerCase();
-}
-
 function extractCharacterMentions(...values) {
   const mentions = [];
   const seen = new Set();
@@ -459,21 +375,8 @@ function scenesFromCsv(rows) {
   const usableRows = rows.filter((row) => String(row.prompt || row.description || "").trim());
   if (!usableRows.length) throw new Error("CSV cần có ít nhất một dòng với cột prompt.");
 
-  const charactersByKey = new Map(project.characters.map((character) => [characterKey(character.name), character]));
-  const importedNames = new Set();
   const scenes = usableRows.map((row, index) => {
     const mentions = extractCharacterMentions(row.prompt, row.characters, row.title, row.dialogue, row.notes);
-    const characterIds = mentions.map((name) => {
-      const key = characterKey(name);
-      let character = charactersByKey.get(key);
-      if (!character) {
-        character = { id: crypto.randomUUID(), name, description: "", images: [] };
-        project.characters.push(character);
-        charactersByKey.set(key, character);
-        importedNames.add(name);
-      }
-      return character.id;
-    });
     return {
       id: `scene-${index + 1}`,
       sceneNumber: row.scene_number || String(index + 1),
@@ -481,7 +384,6 @@ function scenesFromCsv(rows) {
       title: row.title || row.scene || `Phân cảnh ${index + 1}`,
       prompt: row.prompt || row.description || "",
       status: "pending",
-      characterIds,
       compositeImage: null,
       keyframe: null,
       referenceImages: String(row.reference_images || "").split(/[;,]/).map((name) => name.trim().replace(/^@+/, "")).filter(Boolean),
@@ -492,7 +394,7 @@ function scenesFromCsv(rows) {
       note: ""
     };
   });
-  return { scenes, importedNames: [...importedNames] };
+  return { scenes };
 }
 
 function normalizeImportedScenes(scenes = []) {
@@ -503,7 +405,6 @@ function normalizeImportedScenes(scenes = []) {
     title: scene.title || `Phân cảnh ${index + 1}`,
     prompt: scene.prompt || "",
     status: scene.status || "pending",
-    characterIds: Array.isArray(scene.characterIds) ? scene.characterIds : [],
     characters: scene.characters || "",
     transition: scene.transition || "",
     dialogue: scene.dialogue || "",
@@ -520,25 +421,6 @@ function downloadFile(name, contents, type) {
   const anchor = document.createElement("a");
   anchor.href = url; anchor.download = name; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-async function addImageFiles(characterId, files) {
-  const character = project.characters.find((entry) => entry.id === characterId);
-  if (!character) return;
-  const selected = [...files].slice(0, Math.max(0, 10 - character.images.length));
-  for (const file of selected) {
-    if (!file.type.startsWith("image/")) continue;
-    if (file.size > 5 * 1024 * 1024) { toast(`${file.name} vượt giới hạn 5 MB.`); continue; }
-    const bitmap = await createImageBitmap(file);
-    const scale = Math.min(1, 1280 / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
-    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const data = canvas.toDataURL("image/jpeg", 0.84);
-    bitmap.close();
-    character.images.push({ id: crypto.randomUUID(), name: file.name, data });
-  }
-  persist(); renderCharacters();
 }
 
 async function addSceneComposite(sceneId, file) {
@@ -590,18 +472,6 @@ $("#sceneList").addEventListener("change", (event) => {
     event.target.value = "";
     return;
   }
-  const id = event.target.dataset.sceneCharacters;
-  if (!id) return;
-  const scene = project.scenes.find((entry) => entry.id === id);
-  if (scene) { scene.characterIds = [...event.target.selectedOptions].map((option) => option.value); persist(); }
-});
-$("#characterList").addEventListener("input", (event) => {
-  const id = event.target.dataset.characterName || event.target.dataset.characterDescription;
-  const character = project.characters.find((entry) => entry.id === id);
-  if (!character) return;
-  if (event.target.dataset.characterName) character.name = event.target.value;
-  else character.description = event.target.value;
-  persist();
 });
 $("#sceneList").addEventListener("click", async (event) => {
   const id = event.target.dataset.fillScene;
@@ -610,22 +480,6 @@ $("#sceneList").addEventListener("click", async (event) => {
   if (!scene?.prompt.trim()) { toast("Hãy viết prompt cho cảnh này trước."); return; }
   const result = await flowCommand({ type: "FILL_PROMPT", scene: { id, prompt: fullPrompt(scene) } });
   toast(result?.ok ? "Đã điền prompt vào Flow." : result?.error || "Không thể kết nối Flow.");
-});
-$("#addCharacter").addEventListener("click", () => {
-  project.characters.push({ id: crypto.randomUUID(), name: "", description: "", images: [] });
-  persist(); renderCharacters();
-  $("#characterList").lastElementChild.querySelector("[data-character-name]").focus();
-});
-$("#characterList").addEventListener("change", (event) => {
-  const id = event.target.dataset.characterImages;
-  if (id) addImageFiles(id, event.target.files);
-});
-$("#characterList").addEventListener("click", (event) => {
-  const id = event.target.dataset.removeCharacter;
-  if (!id) return;
-  project.characters = project.characters.filter((character) => character.id !== id);
-  project.scenes.forEach((scene) => { scene.characterIds = scene.characterIds.filter((characterId) => characterId !== id); });
-  persist(); render();
 });
 $("#resetScenes").addEventListener("click", () => {
   project.scenes.forEach((scene) => { scene.status = "pending"; scene.note = ""; });
@@ -638,7 +492,7 @@ $("#importFile").addEventListener("change", async (event) => {
       const imported = JSON.parse(await file.text());
       if (!Array.isArray(imported.scenes)) throw new Error("JSON cần có danh sách scenes.");
       project = { ...structuredClone(DEFAULT_PROJECT), ...imported, scenes: normalizeImportedScenes(imported.scenes) };
-      project.characters = Array.isArray(imported.characters) ? imported.characters : [];
+      delete project.characters;
     } else {
       const rows = parseCsv(await file.text());
       if (!rows.length) throw new Error("CSV không có dữ liệu.");
@@ -646,10 +500,9 @@ $("#importFile").addEventListener("change", async (event) => {
       project.scenes = imported.scenes;
       project.running = false;
       project.status = "idle";
-      project.statusMessage = `Đã nhập ${project.scenes.length} cảnh và tự gán nhân vật theo @mention.`;
+      project.statusMessage = `Đã nhập ${project.scenes.length} cảnh.`;
       persist(); render();
-      const characterMessage = imported.importedNames.length ? ` Đã thêm: ${imported.importedNames.map((name) => `@${name}`).join(", ")}.` : "";
-      toast(`Đã nhập ${project.scenes.length} cảnh.${characterMessage}`);
+      toast(`Đã nhập ${project.scenes.length} cảnh.`);
       event.target.value = "";
       return;
     }
@@ -682,7 +535,7 @@ chrome.storage.local.get("flowSceneDirectorProject").then(({ flowSceneDirectorPr
   if (flowSceneDirectorProject) {
     project = { ...structuredClone(DEFAULT_PROJECT), ...flowSceneDirectorProject };
     project.scenes = normalizeImportedScenes(flowSceneDirectorProject.scenes || []);
-    project.characters ||= [];
+    delete project.characters;
     if (project.running) {
       project.running = false;
       project.status = "paused";

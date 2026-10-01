@@ -29,7 +29,7 @@
         <label class="setting"><span>Tỉ lệ</span><select id="aspectRatio"><option value="9:16">9:16 dọc</option><option value="16:9">16:9 ngang</option></select></label>
         <label class="setting"><span>Nối cảnh</span><select id="transitionMode"><option value="extend">Extend</option></select></label>
       </div>
-      <p id="workflowSummary" class="microcopy">Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh và @nhân vật</p>
+      <p id="workflowSummary" class="microcopy">Nhập CSV có cột prompt; extension sẽ tự nhận diện số cảnh</p>
     </section>
 
     <section class="toolbar" aria-label="Điều khiển dự án">
@@ -45,11 +45,6 @@
     <section class="scenes-section">
       <div class="section-heading"><div><h1>Các phân cảnh</h1><span id="sceneCount" class="section-meta">0 / 0 hoàn tất</span></div><button id="resetScenes" class="text-button">Đặt lại cảnh</button></div>
       <div id="sceneList" class="scene-list"></div>
-    </section>
-
-    <section class="characters-section">
-      <div class="section-heading"><div><h2>Thư viện nhân vật</h2><span id="characterCount" class="section-meta">Ảnh được lưu trên máy này</span></div><button id="addCharacter" class="add-button" title="Thêm nhân vật" aria-label="Thêm nhân vật">+</button></div>
-      <div id="characterList" class="character-list"></div>
     </section>
 
     <footer><span id="flowConnection" class="connection"><i></i> Flow chưa được kiểm tra</span><button id="checkFlow" class="text-button">Kiểm tra Flow</button></footer>
