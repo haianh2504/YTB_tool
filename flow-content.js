@@ -61,6 +61,27 @@ function findAction(pattern) {
   return visibleButtons().reverse().find((el) => pattern.test(controlText(el)));
 }
 
+function findComposerAction(box, pattern) {
+  const excluded = /extend|download|upload|ingredients?|settings|more options|tùy chọn|tải xuống|tải ảnh/i;
+  let node = box;
+  for (let depth = 0; node && depth < 9; depth++, node = node.parentElement || node.getRootNode()?.host) {
+    const candidates = queryAllDeep('button, [role="button"], [role="menuitem"]', node)
+      .filter((element) => element.getClientRects().length && !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true")
+      .filter((element) => pattern.test(controlText(element)) && !excluded.test(controlText(element)));
+    if (candidates.length) {
+      const boxRect = box.getBoundingClientRect();
+      return candidates.sort((a, b) => {
+        const distance = (element) => {
+          const rect = element.getBoundingClientRect();
+          return Math.hypot(rect.left + rect.width / 2 - (boxRect.left + boxRect.width / 2), rect.top + rect.height / 2 - (boxRect.top + boxRect.height / 2));
+        };
+        return distance(a) - distance(b);
+      })[0];
+    }
+  }
+  return null;
+}
+
 function actionText(element) {
   return controlText(element).trim();
 }
@@ -349,8 +370,13 @@ async function submitScene(scene) {
   if (signals.lowCredits) throw Object.assign(new Error("Flow báo không đủ credits."), { code: "NO_CREDITS" });
   if (signals.policy) throw Object.assign(new Error("Flow từ chối nội dung theo chính sách."), { code: "POLICY" });
 
-  const generate = findAction(/^(generate|start generation|create video|generate video|tạo video|bắt đầu tạo|tạo hình ảnh)$/i);
-  if (!generate) throw new Error("Đã điền prompt nhưng không nhận diện được nút Generate. Không gửi tác vụ để tránh bấm nhầm.");
+  const currentBox = await waitFor(findPromptBox, 5000, 250);
+  const generate = currentBox && await waitFor(
+    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
+    10000,
+    300
+  );
+  if (!generate) throw new Error("Đã điền prompt nhưng Flow chưa hiển thị nút tạo video khả dụng cạnh ô prompt. Kiểm tra prompt, model và trạng thái Flow rồi thử lại; extension chưa gửi tác vụ.");
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi cảnh đến Flow." });
 
@@ -368,8 +394,13 @@ async function extendScene(scene) {
   setPromptValue(box, scene.prompt);
   await attachReferenceImages(scene.characterImages || []);
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const generate = findAction(/^(generate|start generation|create video|generate video|tạo video|bắt đầu tạo|tạo hình ảnh)$/i);
-  if (!generate) throw new Error("Đã chuẩn bị prompt Extend nhưng không nhận diện được nút Generate.");
+  const currentBox = await waitFor(findPromptBox, 5000, 250);
+  const generate = currentBox && await waitFor(
+    () => findComposerAction(currentBox, /\b(generate|create|make video|submit|send|run)\b|tạo(?: video| hình ảnh)?|bắt đầu tạo|tạo video/i),
+    10000,
+    300
+  );
+  if (!generate) throw new Error("Đã chuẩn bị prompt Extend nhưng Flow chưa hiển thị nút tạo video khả dụng cạnh ô prompt; extension chưa gửi tác vụ.");
   generate.click();
   report("FLOW_STATUS", { status: "generating", sceneId: scene.id, message: "Đã gửi phần Extend đến Flow." });
   await waitForGeneration(scene, beforeVideos);
