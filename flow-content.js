@@ -368,31 +368,16 @@ function videoNearbyActionsDescription(video) {
     .join("; ");
 }
 
-function videoCardContainer(video) {
-  if (!video) return null;
-  let node = video.parentElement || video.getRootNode()?.host;
-  for (let depth = 0; node && depth < 10; depth++, node = node.parentElement || node.getRootNode()?.host) {
-    const videos = queryAllDeep("video", node).filter((item) => item.getClientRects().length);
-    if (videos.length > 2) continue;
-    const cardActions = queryAllDeep('button, [role="button"], [role="menuitem"]', node)
-      .filter((button) => button.getClientRects().length)
-      .filter((button) => /more options|more actions|reuse prompt|add to scene|add to prompt/i.test(controlText(button)));
-    if (cardActions.length) return node;
-  }
-  return video;
-}
-
 function activateMedia(video) {
   if (!video) return null;
-  const card = videoCardContainer(video);
-  card.scrollIntoView({ block: "center", inline: "center" });
+  video.scrollIntoView({ block: "center", inline: "center" });
   for (const type of ["pointerover", "mouseover", "mouseenter"]) {
-    card.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
+    video.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true }));
   }
-  // Select the clip itself. Clicking its play button only starts playback and
-  // leaves Flow in the asset grid, where Extend is not available.
-  card.click();
-  return card;
+  // Dispatch the click from the clip itself. Clicking its outer asset wrapper
+  // can put Flow into batch-selection mode instead of opening clip actions.
+  video.click();
+  return video;
 }
 
 async function openExtendForLatestVideo(signal) {
@@ -444,7 +429,8 @@ async function extendScene(scene, signal) {
   if (!extend) {
     const target = resolvePreferredVideo() || latestVisibleVideo();
     const nearby = videoNearbyActionsDescription(target);
-    throw Object.assign(new Error(`Đã chọn video vừa hoàn tất nhưng Flow không hiển thị thao tác Extend ở thanh dưới cạnh prompt.${nearby ? ` Các nút gần video: ${nearby}` : " Không đọc được các nút của video."} Kiểm tra video có phải clip Veo 3.1 dài 8 giây không; workflow đã dừng để tránh tạo sai cảnh.`), { code: "EXTEND_ACTION_NOT_FOUND" });
+    const promptControls = nearbyControlsDescription(findPromptBox());
+    throw Object.assign(new Error(`Đã chọn clip nhưng Flow chưa mở chế độ chỉnh sửa để hiện Extend ở thanh dưới.${nearby ? ` Các nút gần video: ${nearby}.` : " Không đọc được các nút của video."}${promptControls ? ` Các nút gần thanh prompt: ${promptControls}.` : " Không nhận diện được các nút gần thanh prompt."} Hãy kiểm tra clip tương thích Veo 3.1 8 giây; workflow đã dừng để tránh tạo sai cảnh.`), { code: "EXTEND_ACTION_NOT_FOUND" });
   }
   throwIfCancelled(signal);
   extend.click();
